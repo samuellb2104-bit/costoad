@@ -1,4 +1,13 @@
-# Expenses Organizer (AI Expenses Recognition System)
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="expenses_organizer/frontend/src/assets/brand/costoad-logo-dark.png">
+    <img src="expenses_organizer/frontend/src/assets/brand/costoad-logo.png" alt="CostOad" height="72">
+  </picture>
+</p>
+
+# CostOad — AI Expenses Recognition
+
+**Demo:** [ai-expenses-recognition-system.vercel.app](https://ai-expenses-recognition-system.vercel.app) (acceso solo con cuenta creada por el administrador)
 
 Multi-tenant SaaS where a company drags in invoices/receipts (PDF or photo) and
 Claude extracts vendor, amounts, and date via vision + structured JSON output,

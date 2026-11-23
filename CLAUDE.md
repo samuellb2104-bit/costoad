@@ -4,7 +4,7 @@ Guía para Claude Code en este repositorio. Para detalle de endpoints, OCR, extr
 
 ## Descripción del proyecto
 
-**Expenses Organizer (AI Expenses Recognition System)**: SaaS multi-tenant donde una empresa sube facturas/recibos (PDF o foto) y Claude extrae proveedor, montos y fecha mediante visión + salida JSON estructurada. Cada documento se vincula automáticamente a un proveedor (`Vendor`) y permite organizar el gasto por categoría (`ExpenseCategory`), con reportes de totales. Escala de un archivo a lotes de 50+ usando la Message Batches API de Anthropic (decisión deliberada para no sobrecargar un backend pequeño de un solo worker).
+**CostOad** (antes "Expenses Organizer"; repo de GitHub `samuellb2104-bit/costoad`, renombrado el 2026-11-23 desde `AI-Expenses-Recognition-System`; la carpeta interna sigue siendo `expenses_organizer/` porque Render la usa como Root Directory): SaaS multi-tenant donde una empresa sube facturas/recibos (PDF o foto) y Claude extrae proveedor, montos y fecha mediante visión + salida JSON estructurada. Cada documento se vincula automáticamente a un proveedor (`Vendor`) y permite organizar el gasto por categoría (`ExpenseCategory`), con reportes de totales. Escala de un archivo a lotes de 50+ usando la Message Batches API de Anthropic (decisión deliberada para no sobrecargar un backend pequeño de un solo worker).
 
 Objetivos del proyecto:
 - **Piloto con una empresa real**: hospedado centralmente por Samuel; la empresa entra como un nuevo `Company` (tenant) en el mismo proyecto de Supabase. **No** se empaqueta con Docker/on-prem para el cliente (decisión cerrada; solo se revisa si hay una venta real o exigencia de soberanía de datos).

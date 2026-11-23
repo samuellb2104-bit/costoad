@@ -2,7 +2,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "Expenses Organizer"
+    app_name: str = "CostOad"
     app_env: str = "development"
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/expenses_organizer"
     upload_dir: str = "uploads"
