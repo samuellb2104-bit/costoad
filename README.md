@@ -37,33 +37,151 @@ Render + Vercel.
 
 ## Arquitectura
 
+### Vista general
+
 ```text
-expenses_organizer/
-  backend/                  FastAPI + SQLAlchemy + Alembic
-    app/
-      api/                  routers (delgados)
-      core/                 configuración (pydantic-settings)
-      db/                   sesión, seed, scripts de administración
-      models/               modelos ORM
-      schemas/              esquemas Pydantic
-      services/             lógica de negocio (extracción, OCR, auth, storage...)
-      tests/                pytest
-    alembic/                migraciones
-    Dockerfile              imagen usada en Render (incluye Tesseract y Poppler)
-    main.py
-  frontend/                 React + TypeScript + Vite
-    src/components/         Login, UploadDocument, DocumentsTable, VendorsView, Reports
+            USUARIO (navegador)
+                   │
+                   ▼
+   ┌───────────────────────────────┐
+   │ FRONTEND  (React + Vite)      │  Vercel
+   │ Login · Subir · Tabla ·       │
+   │ Proveedores · Reportes ·      │
+   │ Duplicados                    │
+   └───────┬──────────────┬────────┘
+           │ ① login      │ ② HTTP + token (JSON)
+           ▼              ▼
+   ┌──────────────┐  ┌─────────────────────────────┐
+   │ SUPABASE AUTH│◄─┤ BACKEND (FastAPI, Python)   │  Render
+   │ (usuarios)   │ ③│ contenedor Docker           │
+   └──────────────┘  │ api → services → models     │
+                     └──┬──────────┬──────────┬────┘
+                        │④         │⑤         │⑥
+                        ▼          ▼          ▼
+                ┌────────────┐ ┌─────────┐ ┌──────────────┐
+                │ PostgreSQL │ │ Storage │ │ ANTHROPIC    │
+                │ (Supabase) │ │(PDF/img)│ │ Claude Haiku │
+                │ vía ORM    │ │         │ │ (visión→JSON)│
+                └────────────┘ └─────────┘ └──────────────┘
 ```
 
-**Flujo de procesamiento:**
+1. El usuario inicia sesión en Supabase Auth y recibe un token de acceso.
+2. El frontend llama al backend con ese token en `Authorization: Bearer ...`.
+3. El backend valida el token contra Supabase y obtiene el usuario y su empresa.
+4. Lee y escribe datos en PostgreSQL a través del ORM (SQLAlchemy).
+5. Guarda y lee los archivos originales en Supabase Storage.
+6. Envía cada archivo a Claude, que devuelve los campos extraídos como JSON.
+
+### Flujo de un documento
+
+```text
+Subir archivo ─► Supabase Storage ─► fila en `documents` (status: uploaded)
+      │
+      ├─ < 10 archivos ─► Claude, uno por uno (síncrono)
+      └─ ≥ 10 archivos ─► Anthropic Message Batch (status: batch_queued)
+                           └─ GET /documents consulta el lote e ingiere resultados
+      ▼
+Claude devuelve JSON: proveedor, NIT, fecha, subtotal, IVA, total, moneda, líneas
+      ▼
+Validación de montos (p. ej. "186.900" leído como 186,9) → alertas ⚠
+      ▼
+Vinculación de proveedor (busca por NIT o nombre; si no existe, lo crea)
+      ▼
+Categoría por defecto = la última usada con ese proveedor
+      ▼
+status: ai_extraction_completed ─► Tabla · Reportes · Duplicados
+```
+
+En detalle:
 
 1. El frontend sube cada archivo (`POST /documents/upload`); se guarda en Supabase Storage.
-2. Con menos de 10 archivos, cada documento se procesa de forma síncrona con Claude. Con 10 o más, se envían en un solo **Message Batch** de Anthropic (`POST /documents/batch-extract`) y `GET /documents` consulta los lotes pendientes e ingiere los resultados cuando están listos.
+2. Con menos de 10 archivos, cada documento se procesa de forma síncrona con Claude. Con 10 o más, se envían en un solo **Message Batch** de Anthropic (`POST /documents/batch-extract`) y `GET /documents` consulta los lotes pendientes e ingiere los resultados cuando están listos. Los lotes cuestan un 50 % menos y evitan saturar un backend de un solo worker.
 3. Claude devuelve los campos estructurados, guardados en `document_extractions` (`is_final=true`) para trazabilidad.
 4. Si hay proveedor, se busca un `Vendor` existente de la empresa (por NIT, o por nombre sin distinguir mayúsculas/espacios) o se crea, y se asigna la categoría por defecto del proveedor.
-5. Los documentos que quedan atascados en `uploaded`/`processing` se reanudan solos en el siguiente `GET /documents`.
+5. **Auto-recuperación:** los documentos que quedan atascados en `uploaded`/`processing` (p. ej. si el usuario cerró el navegador) se reanudan solos en el siguiente `GET /documents`.
 
-**Multi-tenant y seguridad:** el backend valida el token de Supabase contra `GET {SUPABASE_URL}/auth/v1/user` y deriva `company_id`/`user_id` del token, nunca de parámetros del cliente. Las operaciones por ID comprueban que el recurso pertenezca a la empresa del usuario.
+### Estructura del proyecto
+
+```text
+.
+├── README.md                     Este documento
+├── CLAUDE.md                     Guía de trabajo y pendientes del proyecto
+└── expenses_organizer/
+    ├── backend/                  ── API (Python 3.12) ──
+    │   ├── main.py               Punto de entrada: crea la app FastAPI, CORS y registra routers
+    │   ├── Dockerfile            Imagen para Render: Python + Tesseract (spa) + Poppler;
+    │   │                         al arrancar corre `alembic upgrade head` y `uvicorn`
+    │   ├── requirements.txt      Dependencias de Python
+    │   ├── .env.example          Plantilla de variables de entorno (sin secretos)
+    │   ├── alembic.ini
+    │   ├── alembic/
+    │   │   ├── env.py            Conecta Alembic con los modelos y la DATABASE_URL
+    │   │   └── versions/         Historial de migraciones (baseline, montos, proveedores y
+    │   │                         categorías, batch_id, document_date, duplicados, RLS)
+    │   └── app/
+    │       ├── api/              Capa HTTP (routers delgados, sin lógica de negocio)
+    │       │   ├── deps.py       get_auth_context: valida el token y resuelve usuario/empresa
+    │       │   ├── documents.py  Subida, lotes, extracción, archivo, clasificar, borrar
+    │       │   ├── vendors.py, expense_categories.py, reports.py, health.py
+    │       ├── services/         Lógica de negocio
+    │       │   ├── ai_extraction_service.py       Claude: prompt, JSON, Message Batches, montos
+    │       │   ├── document_processing_service.py Orquesta OCR/IA, proveedor y categoría
+    │       │   ├── document_service.py            Consultas, filtros, auto-recuperación
+    │       │   ├── amount_validation_service.py   Alertas de valores sospechosos
+    │       │   ├── duplicate_service.py           Detección de duplicados probables
+    │       │   ├── vendor_service.py, expense_category_service.py, report_service.py
+    │       │   ├── storage_service.py             Supabase Storage
+    │       │   ├── auth_service.py                Verificación del token contra Supabase Auth
+    │       │   └── ocr_service.py                 Tesseract + Poppler (opcional)
+    │       ├── models/           Modelos ORM (una clase = una tabla): Company, CompanyMember,
+    │       │                     User, Document, DocumentFile, DocumentExtraction, Vendor,
+    │       │                     ExpenseCategory, DuplicateDismissal, ProcessingLog, ...
+    │       ├── schemas/          Esquemas Pydantic: forma del JSON que entra y sale de la API
+    │       ├── core/config.py    Configuración leída del .env (pydantic-settings)
+    │       ├── db/
+    │       │   ├── session.py            Engine, pool de conexiones y sesión de SQLAlchemy
+    │       │   ├── create_admin_user.py  Alta de empresa + usuario (Supabase Auth + tablas propias)
+    │       │   ├── seed.py               Datos semilla (empresa y categorías por defecto)
+    │       │   └── reprocess_amounts.py, backfill_document_dates.py  Scripts de mantenimiento
+    │       └── tests/            Pruebas pytest (unitarias e integración)
+    └── frontend/                 ── Interfaz (React 19 + TypeScript + Vite) ──
+        ├── index.html, vite.config.ts, tsconfig*.json, .oxlintrc.json
+        ├── package.json          Dependencias y scripts (dev, build, lint)
+        ├── .env.example          VITE_API_BASE_URL, VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
+        └── src/
+            ├── main.tsx, App.tsx Arranque y layout principal (pestañas)
+            ├── components/       Login, UploadDocument, DocumentsTable, VendorsView,
+            │                     Reports, DuplicatesView, ThemeToggle, Brand
+            ├── api/              client.ts (llamadas al backend con el token) y types.ts
+            ├── lib/              supabaseClient.ts, theme.ts (claro/oscuro), splash.ts
+            └── assets/brand/     Logo, isotipo, paleta y animaciones de CostOad
+```
+
+Carpetas generadas que no se versionan: `.venv/` (entorno virtual de Python), `node_modules/` (dependencias de npm), `dist/` (build de Vite), `__pycache__/` y `.pytest_cache/` (cachés de Python), `.env` (secretos).
+
+**Regla de capas del backend:** `api` recibe la petición y valida la entrada → `services` aplica la lógica de negocio → `models` lee y escribe en la base. Así cada capa tiene una sola responsabilidad y la lógica se prueba sin pasar por HTTP.
+
+### Multi-tenant y seguridad
+
+- **Autenticación:** el backend valida el token de Supabase contra `GET {SUPABASE_URL}/auth/v1/user`, por lo que una sesión cerrada o vencida se rechaza de inmediato. No hay registro público.
+- **Aislamiento por empresa:** `company_id`/`user_id` se derivan del token, nunca de parámetros del cliente. Las operaciones por ID (borrar, clasificar, ver archivo) comprueban que el recurso pertenezca a la empresa del usuario (anti-IDOR).
+- **RLS:** las tablas tienen Row Level Security activa, así que la API pública de Supabase no expone datos aunque alguien tenga la anon key.
+- **CORS:** el backend solo acepta peticiones del dominio del frontend configurado en `CORS_ALLOW_ORIGINS`.
+
+### Conceptos técnicos
+
+| Concepto | Qué es y cómo se usa aquí |
+| --- | --- |
+| **API REST / FastAPI** | El backend expone operaciones HTTP (GET leer, POST crear, PATCH modificar, DELETE borrar) que devuelven JSON. FastAPI valida la entrada y genera documentación interactiva en `/docs`; `uvicorn` es el servidor que la ejecuta. |
+| **Docker** | Empaqueta el backend con todo lo que necesita (Python, Tesseract, Poppler, librerías) en una imagen que corre igual en cualquier máquina. Render construye la imagen desde el `Dockerfile`. |
+| **ORM (SQLAlchemy)** | Traduce clases de Python a tablas SQL: se escribe `db.get(Document, id)` en vez de SQL a mano. Modelos en singular (`Document`), tablas en plural (`documents`). |
+| **Alembic** | Control de versiones de la estructura de la base. Cada archivo de `alembic/versions/` es un cambio; `alembic upgrade head` deja cualquier base igual a producción y se ejecuta solo en cada despliegue. |
+| **Pydantic (schemas)** | Define la forma exacta del JSON de cada endpoint. Un *model* es la tabla; un *schema* es lo que viaja por la API. |
+| **Pool de conexiones / pooler** | El backend reutiliza conexiones abiertas (10 + 20 extra) para aguantar ráfagas de subidas. Se conecta por el pooler de Supabase (puerto 6543), por eso se desactivan los prepared statements de psycopg. |
+| **OCR (Tesseract + Poppler)** | Convierte imágenes de texto en texto plano; Poppler pasa las páginas del PDF a imagen. Es opcional: Claude lee el documento directamente y entiende qué número es el total o el IVA. |
+| **Message Batches** | API de Anthropic para enviar muchos documentos en una sola solicitud y procesarlos en segundo plano, a mitad de precio. |
+| **Vite / React / TypeScript** | React arma la interfaz con componentes; TypeScript añade tipos; Vite sirve el entorno de desarrollo (`npm run dev`) y genera el build optimizado (`dist/`). Las variables `VITE_*` se incrustan al compilar. |
+| **`.venv` y `__pycache__`** | `.venv` es el entorno virtual aislado con las librerías del proyecto. `__pycache__` guarda el bytecode compilado de Python para arrancar más rápido; se regenera solo. |
 
 ## Desarrollo local
 
