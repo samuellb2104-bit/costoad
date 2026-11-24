@@ -29,6 +29,8 @@ Render + Vercel.
 - **Subida de documentos**: uno, varios o carpetas completas (arrastrar y soltar). PDFs e imágenes.
 - **Extracción con Claude**: proveedor (`vendor_name`, NIT), fecha, total, impuesto, moneda, líneas de detalle y notas, como JSON estructurado.
 - **Organización**: cada documento se vincula automáticamente a un proveedor y a una categoría de gasto; ambos se pueden corregir a mano.
+- **Búsqueda de comprobantes**: un solo campo busca por proveedor, valor (`186.900`, `186900` o el inicio del número), categoría, nombre de archivo y fecha (`2026-03`, `15/03/2026`), sin distinguir mayúsculas ni tildes. Varias palabras se combinan (`claro 2026-03`).
+- **Exportar a Excel**: descarga un `.xlsx` con los comprobantes que coinciden con la búsqueda y los filtros actuales (hoja *Egresos* con fecha, proveedor, NIT, categoría, IVA, total, moneda y alertas; hoja *Resumen* con totales por categoría y proveedor).
 - **Tabla de documentos**: filtros por proveedor, categoría, rango de fechas del documento y "información faltante"; paginación; previsualización del archivo; reintento de procesamiento fallido y borrado. Los documentos con un valor sospechoso muestran un aviso ⚠ con el motivo y se pueden filtrar con "Solo con alertas de valor".
 - **Vista de proveedores** con paginación.
 - **Reportes**: totales por categoría y por proveedor, con gráficas.
@@ -247,7 +249,8 @@ Todos los endpoints, salvo `/health*`, requieren `Authorization: Bearer <access_
 | `POST /documents/batch-extract` | Envía varios documentos como un Anthropic Message Batch |
 | `POST /documents/{id}/ai-extract` | (Re)ejecuta la extracción con Claude |
 | `POST /documents/{id}/ocr` | Ejecuta OCR local opcional (Tesseract) y luego la extracción |
-| `GET /documents` | Lista paginada. Filtros: `vendor_id`, `expense_category_id`, `document_date_from`, `document_date_to`, `missing_info`, `amount_alert`, `limit`, `offset`. Cada documento trae `amount_warnings` |
+| `GET /documents` | Lista paginada. Filtros: `vendor_id`, `expense_category_id`, `document_date_from`, `document_date_to`, `missing_info`, `amount_alert`, `search`, `limit`, `offset`. Cada documento trae `amount_warnings` |
+| `GET /documents/export` | Descarga un `.xlsx` con todos los documentos que cumplen los mismos filtros de `GET /documents` (sin paginar) |
 | `GET /documents/{id}/file` | Descarga/previsualiza el archivo |
 | `PATCH /documents/{id}/classify` | Asigna o corrige `vendor_id` y/o `expense_category_id` |
 | `DELETE /documents/{id}` | Borra el documento, sus filas relacionadas y el archivo |

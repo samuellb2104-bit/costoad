@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import re
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import HTTPException, UploadFile, status
-from sqlalchemy import and_, or_, update
+from sqlalchemy import BigInteger, String, and_, cast, func, or_, update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.document import Document
 from app.models.document_file import DocumentFile
+from app.models.expense_category import ExpenseCategory
 from app.models.processing_log import ProcessingLog
+from app.models.vendor import Vendor
 from app.schemas.document import DocumentListItem, DocumentUploadResponse
+from app.services.ai_extraction_service import parse_amount_text
 from app.services.amount_validation_service import load_amount_warnings
 from app.services.storage_service import (
     StorageError,
@@ -309,7 +314,63 @@ def get_last_category_for_vendor(db: Session, company_id: UUID, vendor_id: UUID)
     return document.expense_category_id if document is not None else None
 
 
-def _document_query(
+# Accent folding done in SQL with translate() so it needs no Postgres extension
+# (unaccent): "energia" finds "Energía", "PANADERIA" finds "Panadería".
+_ACCENTED = "áéíóúüñÁÉÍÓÚÜÑ"
+_UNACCENTED = "aeiouunAEIOUUN"
+_AMOUNT_TERM = re.compile(r"^\$?[\d.,]+$")
+_MAX_SEARCH_TERMS = 6
+
+
+def _fold(text: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).lower()
+
+
+def _folded_column(column):
+    return func.lower(func.translate(column, _ACCENTED, _UNACCENTED))
+
+
+def _escape_like(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _search_term_condition(term: str):
+    """One search word matches a document when it appears in the vendor name, the
+    category name, the filename or the document date (as YYYY-MM-DD or DD/MM/YYYY),
+    or -- if the word reads as an amount -- when the total starts with that number
+    ("186" or "186.900" both find $186.900; a value with cents must match exactly)."""
+    pattern = f"%{_escape_like(_fold(term))}%"
+    conditions = [
+        _folded_column(Vendor.name).like(pattern, escape="\\"),
+        _folded_column(ExpenseCategory.name).like(pattern, escape="\\"),
+        _folded_column(Document.original_filename).like(pattern, escape="\\"),
+        func.to_char(Document.document_date, "YYYY-MM-DD").like(pattern, escape="\\"),
+        func.to_char(Document.document_date, "DD/MM/YYYY").like(pattern, escape="\\"),
+    ]
+    if _AMOUNT_TERM.match(term):
+        amount = parse_amount_text(term)
+        if amount is not None:
+            if amount == int(amount):
+                integer_text = cast(func.trunc(Document.total_amount), BigInteger).cast(String)
+                conditions.append(integer_text.like(f"{int(amount)}%"))
+            else:
+                conditions.append(func.abs(Document.total_amount - amount) < 0.005)
+    return or_(*conditions)
+
+
+def _apply_search(query, search: str | None):
+    terms = (search or "").split()[:_MAX_SEARCH_TERMS]
+    if not terms:
+        return query
+    query = query.outerjoin(Vendor, Document.vendor_id == Vendor.id).outerjoin(
+        ExpenseCategory, Document.expense_category_id == ExpenseCategory.id
+    )
+    # Every word must match somewhere, so "claro 2026-03" narrows to Claro in March.
+    return query.filter(and_(*(_search_term_condition(term) for term in terms)))
+
+
+def document_query(
     db: Session,
     company_id: UUID,
     vendor_id: UUID | None = None,
@@ -317,8 +378,10 @@ def _document_query(
     document_date_from: date | None = None,
     document_date_to: date | None = None,
     missing_info: bool = False,
+    search: str | None = None,
 ):
     query = db.query(Document).filter(Document.company_id == company_id)
+    query = _apply_search(query, search)
     if vendor_id is not None:
         query = query.filter(Document.vendor_id == vendor_id)
     if expense_category_id is not None:
@@ -349,9 +412,10 @@ def list_documents(
     amount_alert: bool = False,
     limit: int = 50,
     offset: int = 0,
+    search: str | None = None,
 ) -> tuple[list[DocumentListItem], int]:
-    query = _document_query(
-        db, company_id, vendor_id, expense_category_id, document_date_from, document_date_to, missing_info
+    query = document_query(
+        db, company_id, vendor_id, expense_category_id, document_date_from, document_date_to, missing_info, search
     )
 
     if amount_alert:

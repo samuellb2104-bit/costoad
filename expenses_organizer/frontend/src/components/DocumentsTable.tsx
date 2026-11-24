@@ -6,6 +6,7 @@ import {
   createExpenseCategory,
   createVendor,
   deleteDocument,
+  exportDocuments,
   fetchDocumentFile,
   listDocuments,
   listExpenseCategories,
@@ -38,6 +39,9 @@ const BATCH_POLL_INTERVAL_MS = 20_000;
 
 const PAGE_SIZE = 50;
 
+// Wait for a pause in typing before querying, so each keystroke doesn't fire a request.
+const SEARCH_DEBOUNCE_MS = 350;
+
 function formatAmount(totalAmount: number | null, currency: string | null): string {
   if (totalAmount == null) return "-";
   const formatted = totalAmount.toLocaleString("es-CO", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
@@ -69,6 +73,11 @@ export function DocumentsTable({ refreshSignal, presetVendorId }: DocumentsTable
   const [vendorFilter, setVendorFilter] = useState(presetVendorId ?? "");
   const [missingInfoOnly, setMissingInfoOnly] = useState(false);
   const [amountAlertOnly, setAmountAlertOnly] = useState(false);
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [page, setPage] = useState(0);
   const [previewingId, setPreviewingId] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ url: string; mimeType: string; filename: string } | null>(null);
@@ -81,11 +90,16 @@ export function DocumentsTable({ refreshSignal, presetVendorId }: DocumentsTable
     setVendorFilter(presetVendorId ?? "");
   }, [presetVendorId]);
 
+  useEffect(() => {
+    const timeout = setTimeout(() => setSearch(searchInput.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timeout);
+  }, [searchInput]);
+
   // Any filter change should snap back to page 0 -- staying on e.g. page 3 of a
   // narrower result set would just show an empty page.
   useEffect(() => {
     setPage(0);
-  }, [documentDateFrom, documentDateTo, vendorFilter, missingInfoOnly, amountAlertOnly]);
+  }, [documentDateFrom, documentDateTo, vendorFilter, missingInfoOnly, amountAlertOnly, search]);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -98,6 +112,7 @@ export function DocumentsTable({ refreshSignal, presetVendorId }: DocumentsTable
           vendorId: vendorFilter || undefined,
           missingInfo: missingInfoOnly || undefined,
           amountAlert: amountAlertOnly || undefined,
+          search: search || undefined,
           limit: PAGE_SIZE,
           offset: page * PAGE_SIZE,
         }),
@@ -108,6 +123,7 @@ export function DocumentsTable({ refreshSignal, presetVendorId }: DocumentsTable
       setTotal(itemsTotal);
       setVendors(vendorList);
       setCategories(categoryList);
+      setHasLoaded(true);
 
       // A fresh load supersedes any pending poll -- clear it before possibly
       // scheduling a new one below, so overlapping loads never double-poll.
@@ -123,7 +139,7 @@ export function DocumentsTable({ refreshSignal, presetVendorId }: DocumentsTable
     } finally {
       setLoading(false);
     }
-  }, [documentDateFrom, documentDateTo, vendorFilter, missingInfoOnly, amountAlertOnly, page]);
+  }, [documentDateFrom, documentDateTo, vendorFilter, missingInfoOnly, amountAlertOnly, search, page]);
 
   useEffect(() => {
     void loadAll();
@@ -179,6 +195,31 @@ export function DocumentsTable({ refreshSignal, presetVendorId }: DocumentsTable
     }
   }
 
+  async function handleExport() {
+    setExporting(true);
+    setExportError(null);
+    try {
+      const blob = await exportDocuments({
+        documentDateFrom: documentDateFrom || undefined,
+        documentDateTo: documentDateTo || undefined,
+        vendorId: vendorFilter || undefined,
+        missingInfo: missingInfoOnly || undefined,
+        amountAlert: amountAlertOnly || undefined,
+        search: search || undefined,
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `costoad-egresos-${new Date().toISOString().slice(0, 10)}.xlsx`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setExportError(err instanceof ApiError ? err.message : "No se pudo generar el archivo de Excel.");
+    } finally {
+      setExporting(false);
+    }
+  }
+
   async function handlePreview(doc: DocumentListItem) {
     setPreviewingId(doc.id);
     setPreviewError(null);
@@ -215,7 +256,9 @@ export function DocumentsTable({ refreshSignal, presetVendorId }: DocumentsTable
     }
   }
 
-  if (loading && documents.length === 0) {
+  // Full-screen loader only on the very first load: afterwards an empty result (e.g. a
+  // search with no matches) must keep the toolbar mounted so the search box keeps focus.
+  if (!hasLoaded) {
     return <Loader label="Cargando documentos..." />;
   }
 
@@ -225,6 +268,37 @@ export function DocumentsTable({ refreshSignal, presetVendorId }: DocumentsTable
 
   return (
     <div>
+      <div className="search-bar">
+        <input
+          type="search"
+          className="search-input"
+          placeholder="Buscar por proveedor, valor, categoria o fecha (ej. claro, 186.900, 2026-03)"
+          aria-label="Buscar comprobantes"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Escape" && setSearchInput("")}
+        />
+        {searchInput && (
+          <button className="search-clear" onClick={() => setSearchInput("")} aria-label="Limpiar busqueda">
+            Limpiar
+          </button>
+        )}
+        {search && !loading && (
+          <span className="search-count">
+            {total} {total === 1 ? "resultado" : "resultados"}
+          </span>
+        )}
+        <button
+          className="export-button"
+          onClick={handleExport}
+          disabled={exporting || total === 0}
+          title="Descarga en Excel los comprobantes que coinciden con la busqueda y los filtros"
+        >
+          {exporting ? "Generando..." : "Exportar a Excel"}
+        </button>
+      </div>
+      {exportError && <p className="error-text">{exportError}</p>}
+
       <div className="quick-add-row">
         <div className="quick-add">
           <input
@@ -302,7 +376,11 @@ export function DocumentsTable({ refreshSignal, presetVendorId }: DocumentsTable
       {previewError && <p className="error-text">{previewError}</p>}
 
       {documents.length === 0 ? (
-        <p>No hay documentos que coincidan con los filtros.</p>
+        <p>
+          {search
+            ? `No hay comprobantes que coincidan con "${search}".`
+            : "No hay documentos que coincidan con los filtros."}
+        </p>
       ) : (
         <div className="table-scroll">
 <table className="documents-table">

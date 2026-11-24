@@ -71,7 +71,7 @@ def check_amounts(
     return warnings
 
 
-def _latest_final_extractions(db: Session, document_ids: list[uuid.UUID]) -> dict[uuid.UUID, dict]:
+def latest_final_extractions(db: Session, document_ids: list[uuid.UUID]) -> dict[uuid.UUID, dict]:
     latest: dict[uuid.UUID, dict] = {}
     for start in range(0, len(document_ids), _ID_CHUNK):
         chunk = document_ids[start : start + _ID_CHUNK]
@@ -94,7 +94,7 @@ def load_amount_warnings(db: Session, documents: Iterable[Document]) -> dict[uui
     if not documents:
         return {}
 
-    extractions = _latest_final_extractions(db, [d.id for d in documents])
+    extractions = latest_final_extractions(db, [d.id for d in documents])
 
     result: dict[uuid.UUID, list[str]] = {}
     for document in documents:

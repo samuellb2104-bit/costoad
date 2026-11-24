@@ -97,6 +97,7 @@ export async function listDocuments(filters: {
   documentDateTo?: string;
   missingInfo?: boolean;
   amountAlert?: boolean;
+  search?: string;
   limit?: number;
   offset?: number;
 } = {}): Promise<DocumentListResponse> {
@@ -107,10 +108,36 @@ export async function listDocuments(filters: {
     document_date_to: filters.documentDateTo,
     missing_info: filters.missingInfo,
     amount_alert: filters.amountAlert,
+    search: filters.search,
     limit: filters.limit,
     offset: filters.offset,
   });
   return request<DocumentListResponse>(`/documents${query}`);
+}
+
+export async function exportDocuments(filters: {
+  vendorId?: string;
+  documentDateFrom?: string;
+  documentDateTo?: string;
+  missingInfo?: boolean;
+  amountAlert?: boolean;
+  search?: string;
+} = {}): Promise<Blob> {
+  const query = buildQuery({
+    vendor_id: filters.vendorId,
+    document_date_from: filters.documentDateFrom,
+    document_date_to: filters.documentDateTo,
+    missing_info: filters.missingInfo,
+    amount_alert: filters.amountAlert,
+    search: filters.search,
+  });
+  const response = await fetch(`${API_BASE_URL}/documents/export${query}`, {
+    headers: await authHeaders(),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, "No se pudo generar el archivo de Excel.");
+  }
+  return response.blob();
 }
 
 export async function fetchDocumentFile(documentId: string): Promise<Blob> {

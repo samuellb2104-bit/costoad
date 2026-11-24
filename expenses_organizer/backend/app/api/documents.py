@@ -32,6 +32,7 @@ from app.services.document_service import (
     list_resumable_document_ids,
     try_claim_document_for_processing,
 )
+from app.services.export_service import build_documents_workbook
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -76,6 +77,7 @@ def get_documents(
     document_date_to: date | None = Query(None),
     missing_info: bool = Query(False),
     amount_alert: bool = Query(False),
+    search: str | None = Query(None, max_length=200),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -86,7 +88,9 @@ def get_documents(
     document itself (document_date, not upload time), and/or missing_info (any of
     vendor/category/amount not set yet, for finding documents that need manual
     review) and/or amount_alert (only documents whose extracted amount looks
-    implausible, e.g. "186.900" read as 186,9) -- the endpoint the frontend uses to browse invoices.
+    implausible, e.g. "186.900" read as 186,9) and/or search (free text matched against
+vendor, category, filename, amount and document date; every word must match) -- the
+endpoint the frontend uses to browse invoices.
 
     Also opportunistically resumes any documents stuck in 'uploaded' (e.g. the browser
     closed/lost connection between the upload call and the follow-up OCR call), or stuck
@@ -112,8 +116,43 @@ def get_documents(
         amount_alert=amount_alert,
         limit=limit,
         offset=offset,
+        search=search,
     )
     return DocumentListResponse(items=items, total=total)
+
+
+@router.get("/export")
+def export_documents(
+    vendor_id: UUID | None = Query(None),
+    expense_category_id: UUID | None = Query(None),
+    document_date_from: date | None = Query(None),
+    document_date_to: date | None = Query(None),
+    missing_info: bool = Query(False),
+    amount_alert: bool = Query(False),
+    search: str | None = Query(None, max_length=200),
+    db: Session = Depends(get_db),
+    auth: AuthContext = Depends(get_auth_context),
+):
+    """Downloads every document matching the same filters as GET /documents (no
+    pagination) as an .xlsx: an "Egresos" sheet with one row per document and a
+    "Resumen" sheet with totals by category and by vendor."""
+    content = build_documents_workbook(
+        db=db,
+        company_id=auth.company_id,
+        vendor_id=vendor_id,
+        expense_category_id=expense_category_id,
+        document_date_from=document_date_from,
+        document_date_to=document_date_to,
+        missing_info=missing_info,
+        amount_alert=amount_alert,
+        search=search,
+    )
+    filename = f"costoad-egresos-{date.today().isoformat()}.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/upload", response_model=DocumentUploadResponse, status_code=status.HTTP_201_CREATED)

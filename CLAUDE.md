@@ -86,7 +86,7 @@ Estado: backend, frontend, auth, lotes, filtros, vista de proveedores y previsua
 - [ ] Capturas de pantalla y una breve explicación de decisiones de arquitectura (Message Batches, multi-tenant, auth remota).
 
 ### 5. Ideas opcionales (después del piloto)
-- Exportar reportes a CSV/Excel; más gráficas o filtros por rango de fechas en reportes.
+- ~~Exportar a Excel~~: hecho el 2026-11-24 (`GET /documents/export`, botón en la tabla), junto con la búsqueda de comprobantes. Pendiente: más gráficas o filtros por rango de fechas en reportes.
 - Roles/permisos dentro de una empresa; invitación de usuarios sin usar el script.
 - Empaquetado Docker/on-prem **solo** si hay una venta real o requisito de soberanía de datos.
 
